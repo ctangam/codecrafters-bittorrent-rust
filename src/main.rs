@@ -1,7 +1,7 @@
 use hex::encode_upper;
+use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
-use std::{env, collections::HashMap};
-
+use std::{collections::HashMap, env, io::Read, path::Path, vec};
 // Available if you need it!
 // use serde_bencode
 
@@ -11,13 +11,13 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
         Some('i') => {
             let (_, left) = encoded_value.split_at(1);
             if let Some((digits, remainder)) = left.split_once('e') {
-                    return (digits.parse::<i64>().unwrap().into(), remainder)
+                return (digits.parse::<i64>().unwrap().into(), remainder);
             }
         }
         Some('0'..='9') => {
             if let Some((digits, s)) = encoded_value.split_once(':') {
                 let len = digits.parse().unwrap();
-                return (s[..len].into(), &s[len..])
+                return (s[..len].into(), &s[len..]);
             }
         }
         Some('l') => {
@@ -28,7 +28,7 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
                 values.push(value);
                 remainder = left;
             }
-            return (values.into(), &remainder[1..])
+            return (values.into(), &remainder[1..]);
         }
         Some('d') => {
             let mut dict = serde_json::Map::new();
@@ -45,9 +45,9 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
                 dict.insert(key, value);
                 remainder = left;
             }
-            return (dict.into(), &remainder[1..])
+            return (dict.into(), &remainder[1..]);
         }
-        _ => unimplemented!()
+        _ => unimplemented!(),
     }
 
     (json!(null), encoded_value)
@@ -62,7 +62,106 @@ fn main() {
         let encoded_value = &args[2];
         let (decoded_value, _) = decode_bencoded_value(encoded_value);
         println!("{}", decoded_value.to_string());
+    } else if command == "info" {
+        let path = Path::new("D:\\rust projects\\codecrafters-bittorrent-rust\\sample.torrent");
+        let content = std::fs::read(path).unwrap();
+        let tor: Torrent = serde_bencode::from_bytes(&content).unwrap();
+        println!("Tracker URL: {}", tor.announce);
+        let length = if let Keys::Single { length } = tor.info.keys {
+            length
+        } else {
+            todo!();
+        };
+        println!("Length: {length}");
     } else {
         println!("unknown command: {}", args[1])
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Torrent {
+    announce: String,
+    info: Info,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Info {
+    name: String,
+
+    #[serde(rename = "piece length")]
+    plength: usize,
+
+    pieces: hashes::Hashes,
+
+    #[serde(flatten)]
+    keys: Keys,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum Keys {
+    Single { length: usize },
+
+    Multipy { files: Vec<File> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct File {
+    length: usize,
+    path: Vec<String>,
+}
+
+mod hashes {
+
+    use serde::{
+        de::{self, Visitor},
+        Deserialize, Serialize,
+    };
+    use std::fmt;
+
+    #[derive(Debug, Clone)]
+    pub struct Hashes(Vec<[u8; 20]>);
+    struct HashesVisitor;
+
+    impl<'de> Visitor<'de> for HashesVisitor {
+        type Value = Hashes;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a byte string whose length is a multiple of 20")
+        }
+
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if v.len() % 20 != 0 {
+                Err(E::custom("length not a multiple of 20"))
+            } else {
+                Ok(Hashes(
+                    v.chunks_exact(20)
+                        .map(|c| c.try_into().expect("guaranteed to be length 20"))
+                        .collect(),
+                ))
+            }
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Hashes {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer.deserialize_bytes(HashesVisitor)
+        }
+    }
+
+    impl Serialize for Hashes {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            let single_slice = self.0.concat();
+            serializer.serialize_bytes(&single_slice)
+        }
     }
 }
