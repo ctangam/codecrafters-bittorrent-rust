@@ -10,13 +10,13 @@ fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
         'i' => {
             let (_, left) = encoded_value.split_at(1);
             if let Some((digits, _)) = left.split_once('e') {
-                    return digits.into()
+                    return digits.parse::<i64>().unwrap().into()
             }
         }
         '0'..='9' => {
             if let Some((digits, s)) = encoded_value.split_once(':') {
                 let len = digits.parse().unwrap();
-                return serde_json::Value::Number(s[..len].parse::<i64>().unwrap().into())
+                return s[..len].into()
             }
         }
         'l' => {
