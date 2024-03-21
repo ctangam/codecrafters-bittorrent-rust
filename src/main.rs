@@ -1,9 +1,26 @@
+use anyhow::Context;
+use clap::{Parser, Subcommand};
 use hex::encode_upper;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
-use std::{collections::HashMap, env, io::Read, path::Path, vec};
-// Available if you need it!
-// use serde_bencode
+use std::{collections::HashMap, env, io::Read, path::{Path, PathBuf}, vec};
+
+#[derive(Debug, Parser)]
+struct Args {
+    #[command(subcommand)]
+    command: Command
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    Decode {
+        value: String
+    },
+
+    Info {
+        torrent: PathBuf
+    }
+}
 
 #[allow(dead_code)]
 fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
@@ -54,28 +71,28 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    let command = &args[1];
+fn main() -> anyhow::Result<()>{
+    let args = Args::parse();
 
-    if command == "decode" {
-        let encoded_value = &args[2];
-        let (decoded_value, _) = decode_bencoded_value(encoded_value);
-        println!("{}", decoded_value.to_string());
-    } else if command == "info" {
-        let path = Path::new("D:\\rust projects\\codecrafters-bittorrent-rust\\sample.torrent");
-        let content = std::fs::read(path).unwrap();
-        let tor: Torrent = serde_bencode::from_bytes(&content).unwrap();
-        println!("Tracker URL: {}", tor.announce);
-        let length = if let Keys::Single { length } = tor.info.keys {
-            length
-        } else {
-            todo!();
-        };
-        println!("Length: {length}");
-    } else {
-        println!("unknown command: {}", args[1])
+    match args.command {
+        Command::Decode { value } => {
+            let v = decode_bencoded_value(&value).0;
+            println!("{v}");
+        },
+        Command::Info { torrent } => {
+            let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
+            let tor: Torrent = serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
+            println!("Tracker URL: {}", tor.announce);
+            let length = if let Keys::Single { length } = tor.info.keys {
+                length
+            } else {
+                todo!();
+            };
+            println!("Length: {length}");
+        }
     }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
