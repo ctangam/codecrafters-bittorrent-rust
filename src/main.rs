@@ -16,7 +16,7 @@ fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
         '0'..='9' => {
             if let Some((digits, s)) = encoded_value.split_once(':') {
                 let len = digits.parse().unwrap();
-                return s[..len].into()
+                return serde_json::Value::Number(s[..len].parse::<i64>().unwrap().into())
             }
         }
         'l' => {
