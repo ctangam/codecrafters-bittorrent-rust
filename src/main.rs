@@ -1,8 +1,8 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use hex::encode_upper;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
+use sha1::{Sha1, Digest};
 use std::{collections::HashMap, env, io::Read, path::{Path, PathBuf}, vec};
 
 #[derive(Debug, Parser)]
@@ -89,11 +89,17 @@ fn main() -> anyhow::Result<()>{
                 todo!();
             };
             println!("Length: {length}");
+            let info_encode = serde_bencode::to_bytes(&tor.info).context("bencode info")?;
+            let mut hasher = Sha1::new();
+            hasher.update(&info_encode);
+            let info_hash = hasher.finalize();
+            println!("Info Hash: {}", hex::encode(info_hash));
         }
     }
 
     Ok(())
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Torrent {
