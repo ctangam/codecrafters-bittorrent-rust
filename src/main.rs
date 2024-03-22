@@ -1,8 +1,13 @@
 use anyhow::Context;
+use bytes::{BufMut, BytesMut};
 use clap::{Parser, Subcommand};
 
 use serde_json::{self, json};
-use std::path::PathBuf;
+use std::{io::Write, path::PathBuf};
+use tokio::{
+    io::{self, AsyncWriteExt},
+    net::TcpSocket,
+};
 
 use bittorrent_starter_rust::{
     torrent::{self, Torrent},
@@ -23,6 +28,8 @@ enum Command {
     Info { torrent: PathBuf },
 
     Peers { torrent: PathBuf },
+
+    Handshake { torrent: PathBuf, peer: String },
 }
 
 #[allow(dead_code)]
@@ -129,9 +136,42 @@ async fn main() -> anyhow::Result<()> {
             );
             let res = reqwest::get(query_url).await.context("query tracker")?;
             let res = res.bytes().await.context("fetch tracker res")?;
-            let tracker_info: TrackerResponse = serde_bencode::from_bytes(&res).context("parse tracker res")?;
+            let tracker_info: TrackerResponse =
+                serde_bencode::from_bytes(&res).context("parse tracker res")?;
             for (ip, port) in tracker_info.peers.0 {
                 println!("{ip}:{port}")
+            }
+        }
+        Command::Handshake { torrent, peer } => {
+            let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
+            let tor: Torrent =
+                serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
+
+            let info_hash = tor.info_hash();
+
+            let mut buf = BytesMut::with_capacity(68);
+            buf.put_u8(19);
+            buf.put(&b"BitTorrent protocol"[..]);
+            buf.put_slice(&[0u8; 8]);
+            buf.put_slice(&info_hash);
+            buf.put(&b"00112233445566778899"[..]);
+
+            let socket = TcpSocket::new_v4().context("new socket")?;
+            let mut stream = socket
+                .connect(peer.parse().context("peer parse")?)
+                .await
+                .context("connect peer")?;
+            stream.write(&buf).await.context("send handshake")?;
+
+            let mut buf = [0; 128];
+
+            // Wait for the socket to be readable
+            stream.readable().await?;
+
+            // Try to read data, this may still fail with `WouldBlock`
+            // if the readiness event is a false positive.
+            if let Ok(len) = stream.try_read(&mut buf) {
+                println!("Peer ID: {}", hex::encode(&buf[48..len]))
             }
         }
     }
