@@ -94,6 +94,11 @@ fn main() -> anyhow::Result<()>{
             hasher.update(&info_encode);
             let info_hash = hasher.finalize();
             println!("Info Hash: {}", hex::encode(info_hash));
+            println!("Piece Length: {}", tor.info.plength);
+            println!("Piece Hashes:");
+            for hash in &tor.info.pieces.0 {
+                println!("{}", hex::encode(hash))
+            }
         }
     }
 
@@ -143,7 +148,7 @@ mod hashes {
     use std::fmt;
 
     #[derive(Debug, Clone)]
-    pub struct Hashes(Vec<[u8; 20]>);
+    pub struct Hashes(pub Vec<[u8; 20]>);
     struct HashesVisitor;
 
     impl<'de> Visitor<'de> for HashesVisitor {
