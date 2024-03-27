@@ -32,10 +32,10 @@ mod peers {
         de::{self, Visitor},
         Deserialize, Serialize,
     };
-    use std::{fmt, net::Ipv4Addr};
+    use std::{fmt, net::{Ipv4Addr, SocketAddrV4}};
 
     #[derive(Debug, Clone)]
-    pub struct Peers(pub Vec<(Ipv4Addr, u16)>);
+    pub struct Peers(pub Vec<SocketAddrV4>);
     struct PeersVisitor;
 
     impl<'de> Visitor<'de> for PeersVisitor {
@@ -57,7 +57,7 @@ mod peers {
                         .map(|c| {
                             let addr = Ipv4Addr::new(c[0], c[1], c[2], c[3]);
                             let port = u16::from_be_bytes([c[4], c[5]]);
-                            (addr, port)
+                            SocketAddrV4::new(addr, port)
                         })
                         .collect(),
                 ))
@@ -82,10 +82,10 @@ mod peers {
             let single_slice = self
                 .0
                 .iter()
-                .flat_map(|(addr, port)| {
+                .flat_map(|addr| {
                     let mut bytes: Vec<u8> = Vec::with_capacity(6);
-                    bytes.extend_from_slice(&addr.octets());
-                    bytes.extend_from_slice(&port.to_be_bytes());
+                    bytes.extend_from_slice(&addr.ip().octets());
+                    bytes.extend_from_slice(&addr.port().to_be_bytes());
                     bytes
                 })
                 .collect::<Vec<u8>>();

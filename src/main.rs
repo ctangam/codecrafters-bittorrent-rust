@@ -1,17 +1,20 @@
 use anyhow::Context;
-use bytes::{BufMut, BytesMut};
 use clap::{Parser, Subcommand};
 
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{self, json};
-use std::{io::Write, path::PathBuf};
+use sha1::{Digest, Sha1};
+use std::{net::SocketAddrV4, path::PathBuf};
 use tokio::{
-    io::{self, AsyncWriteExt},
-    net::TcpSocket,
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
 };
 
 use bittorrent_starter_rust::{
+    peer::{Handshake, Message, MessageFramer, MessageTag, Piece, Request},
     torrent::{self, Torrent},
     tracker::{TrackerRequest, TrackerResponse},
+    BLOCK_MAX,
 };
 
 #[derive(Debug, Parser)]
@@ -23,13 +26,29 @@ struct Args {
 #[derive(Debug, Subcommand)]
 #[clap(rename_all = "snake_case")]
 enum Command {
-    Decode { value: String },
+    Decode {
+        value: String,
+    },
 
-    Info { torrent: PathBuf },
+    Info {
+        torrent: PathBuf,
+    },
 
-    Peers { torrent: PathBuf },
+    Peers {
+        torrent: PathBuf,
+    },
 
-    Handshake { torrent: PathBuf, peer: String },
+    Handshake {
+        torrent: PathBuf,
+        peer: String,
+    },
+
+    DownloadPiece {
+        #[arg(short)]
+        output: PathBuf,
+        torrent: PathBuf,
+        piece_id: usize,
+    },
 }
 
 #[allow(dead_code)]
@@ -138,8 +157,8 @@ async fn main() -> anyhow::Result<()> {
             let res = res.bytes().await.context("fetch tracker res")?;
             let tracker_info: TrackerResponse =
                 serde_bencode::from_bytes(&res).context("parse tracker res")?;
-            for (ip, port) in tracker_info.peers.0 {
-                println!("{ip}:{port}")
+            for addr in tracker_info.peers.0 {
+                println!("{}:{}", addr.ip(), addr.port())
             }
         }
         Command::Handshake { torrent, peer } => {
@@ -149,30 +168,149 @@ async fn main() -> anyhow::Result<()> {
 
             let info_hash = tor.info_hash();
 
-            let mut buf = BytesMut::with_capacity(68);
-            buf.put_u8(19);
-            buf.put(&b"BitTorrent protocol"[..]);
-            buf.put_slice(&[0u8; 8]);
-            buf.put_slice(&info_hash);
-            buf.put(&b"00112233445566778899"[..]);
-
-            let socket = TcpSocket::new_v4().context("new socket")?;
-            let mut stream = socket
-                .connect(peer.parse().context("peer parse")?)
+            let mut peer = TcpStream::connect(peer.parse::<SocketAddrV4>().context("peer parse")?)
                 .await
                 .context("connect peer")?;
-            stream.write(&buf).await.context("send handshake")?;
 
-            let mut buf = [0; 128];
-
-            // Wait for the socket to be readable
-            stream.readable().await?;
-
-            // Try to read data, this may still fail with `WouldBlock`
-            // if the readiness event is a false positive.
-            if let Ok(len) = stream.try_read(&mut buf) {
-                println!("Peer ID: {}", hex::encode(&buf[48..len]))
+            let mut handshake = Handshake::new(info_hash, *b"00112233445566778899");
+            {
+                let handshake_bytes = handshake.as_bytes_mut();
+                peer.write_all(handshake_bytes)
+                    .await
+                    .context("send handshake")?;
+                peer.read_exact(handshake_bytes)
+                    .await
+                    .context("read handshake")?;
             }
+
+            println!("Peer ID: {}", hex::encode(&handshake.peer_id));
+        }
+        Command::DownloadPiece {
+            output,
+            torrent,
+            piece_id,
+        } => {
+            let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
+            let tor: Torrent =
+                serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
+            let length = if let torrent::Keys::Single { length } = tor.info.keys {
+                length
+            } else {
+                todo!();
+            };
+            let info_hash = tor.info_hash();
+
+            let params = TrackerRequest {
+                peer_id: "00112233445566778899".into(),
+                port: 6881,
+                uploaded: 0,
+                downloaded: 0,
+                left: length,
+                compact: 1,
+            };
+            let encoded = serde_urlencoded::to_string(params).context("url encode params")?;
+            let query_url = format!(
+                "{}?{}&info_hash={}",
+                tor.announce,
+                encoded,
+                urlencode(&info_hash)
+            );
+            let res = reqwest::get(query_url).await.context("query tracker")?;
+            let res = res.bytes().await.context("fetch tracker res")?;
+            let tracker_info: TrackerResponse =
+                serde_bencode::from_bytes(&res).context("parse tracker res")?;
+
+            let peer = tracker_info.peers.0[0];
+            let mut peer = TcpStream::connect(peer).await.context("connect peer")?;
+
+            let mut handshake = Handshake::new(info_hash, *b"00112233445566778899");
+            {
+                let handshake_bytes = handshake.as_bytes_mut();
+                peer.write_all(handshake_bytes)
+                    .await
+                    .context("send handshake")?;
+                peer.read_exact(handshake_bytes)
+                    .await
+                    .context("read handshake")?;
+            }
+
+            let mut peer = tokio_util::codec::Framed::new(peer, MessageFramer);
+            let bitfield = peer
+                .next()
+                .await
+                .expect("bitfield msg")
+                .context("read bitfield")?;
+
+            peer.send(Message {
+                tag: MessageTag::Interested,
+                payload: Vec::new(),
+            })
+            .await
+            .context("send interested message")?;
+
+            let unchoke = peer
+                .next()
+                .await
+                .expect("unchoke msg")
+                .context("read unchoke")?;
+
+            let piece_size = if piece_id == tor.info.pieces.0.len() - 1 {
+                let md = length % tor.info.plength;
+                if md == 0 {
+                    tor.info.plength
+                } else {
+                    md
+                }
+            } else {
+                tor.info.plength
+            };
+
+            let nblocks = (piece_size + BLOCK_MAX - 1) / BLOCK_MAX;
+            let mut all_blocks = Vec::with_capacity(piece_size);
+            for block in 0..nblocks {
+                let block_size = if block == nblocks - 1 {
+                    let md = tor.info.plength % BLOCK_MAX;
+                    if md == 0 {
+                        BLOCK_MAX
+                    } else {
+                        md
+                    }
+                } else {
+                    BLOCK_MAX
+                };
+
+                let mut request = Request::new(
+                    piece_id as u32,
+                    (block * BLOCK_MAX) as u32,
+                    block_size as u32,
+                );
+                peer.send(Message {
+                    tag: MessageTag::Request,
+                    payload: request.as_bytes_mut().to_vec(),
+                })
+                .await
+                .with_context(|| format!("send request for block {block}"));
+
+                let piece = peer
+                    .next()
+                    .await
+                    .expect("receive piece msg")
+                    .context("invalid piece msg")?;
+                let piece = Piece::ref_from_bytes(&piece.payload)
+                    .expect("always get all Piece response fields from peer");
+                all_blocks.extend(piece.block())
+            }
+            let mut hasher = Sha1::new();
+            hasher.update(&all_blocks);
+            let hash: [u8; 20] = hasher
+                .finalize()
+                .try_into()
+                .expect("GenericArray<_, 20> == [_; 20]");
+
+            tokio::fs::write(&output, all_blocks)
+                .await
+                .context("write out downloaded piece")?;
+            println!("Piece {piece_id} downloaded to {}.", output.display());
         }
     }
 
