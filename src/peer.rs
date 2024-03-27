@@ -106,6 +106,7 @@ pub struct Message {
     pub payload: Vec<u8>,
 }
 
+#[derive(Debug, PartialEq)]
 #[repr(u8)]
 pub enum MessageTag {
     Choke = 0,

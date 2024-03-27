@@ -247,12 +247,15 @@ async fn main() -> anyhow::Result<()> {
             })
             .await
             .context("send interested message")?;
+        
 
             let unchoke = peer
                 .next()
                 .await
                 .expect("unchoke msg")
                 .context("read unchoke")?;
+            assert_eq!(unchoke.tag, MessageTag::Unchoke);
+            assert!(unchoke.payload.is_empty());
 
             let piece_size = if piece_id == tor.info.pieces.0.len() - 1 {
                 let md = length % tor.info.plength;
@@ -269,7 +272,7 @@ async fn main() -> anyhow::Result<()> {
             let mut all_blocks = Vec::with_capacity(piece_size);
             for block in 0..nblocks {
                 let block_size = if block == nblocks - 1 {
-                    let md = tor.info.plength % BLOCK_MAX;
+                    let md = piece_size % BLOCK_MAX;
                     if md == 0 {
                         BLOCK_MAX
                     } else {
@@ -289,7 +292,7 @@ async fn main() -> anyhow::Result<()> {
                     payload: request.as_bytes_mut().to_vec(),
                 })
                 .await
-                .with_context(|| format!("send request for block {block}"));
+                .with_context(|| format!("send request for block {block}"))?;
 
                 let piece = peer
                     .next()
