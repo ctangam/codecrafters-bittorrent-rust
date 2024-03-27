@@ -300,12 +300,15 @@ async fn main() -> anyhow::Result<()> {
                     .expect("always get all Piece response fields from peer");
                 all_blocks.extend(piece.block())
             }
+
+            let piece_hash = &tor.info.pieces.0[piece_id];
             let mut hasher = Sha1::new();
             hasher.update(&all_blocks);
             let hash: [u8; 20] = hasher
                 .finalize()
                 .try_into()
                 .expect("GenericArray<_, 20> == [_; 20]");
+            assert_eq!(&hash, piece_hash);
 
             tokio::fs::write(&output, all_blocks)
                 .await
