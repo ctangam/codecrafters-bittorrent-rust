@@ -514,9 +514,9 @@ async fn download_piece(
     
             tx.send((piece_id, all_blocks)).await?;
             println!("Piece {piece_id} downloaded.");
+        } else {
+            return Ok(())
         }
-
-        return Ok(())
     }
 }
 
