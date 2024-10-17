@@ -1,12 +1,13 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{future::join_all, SinkExt, StreamExt};
 use serde_json::{self, json};
 use sha1::{Digest, Sha1};
 use std::{net::SocketAddrV4, path::PathBuf};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
+    join,
     net::TcpStream,
 };
 
@@ -354,103 +355,27 @@ async fn main() -> anyhow::Result<()> {
             let tracker_info: TrackerResponse =
                 serde_bencode::from_bytes(&res).context("parse tracker res")?;
 
-            let peer = tracker_info.peers.0[0];
-            let mut peer = TcpStream::connect(peer).await.context("connect peer")?;
 
-            let mut handshake = Handshake::new(info_hash, *b"00112233445566778899");
-            {
-                let handshake_bytes = handshake.as_bytes_mut();
-                peer.write_all(handshake_bytes)
-                    .await
-                    .context("send handshake")?;
-                peer.read_exact(handshake_bytes)
-                    .await
-                    .context("read handshake")?;
-            }
-
-            let mut peer = tokio_util::codec::Framed::new(peer, MessageFramer);
-            let bitfield = peer
-                .next()
+            println!("{} pieces to download.", tor.info.pieces.0.len());
+            let mut tasks = Vec::new();
+            (0..tor.info.pieces.0.len()).zip((0..tracker_info.peers.0.len()).cycle()).for_each(|(piece_id, peer)| {
+                
+                tasks.push(download_piece(
+                    piece_id,
+                    tor.info.pieces.0.len(),
+                    tor.info.plength,
+                    tor.info.pieces.0[piece_id],
+                    length,
+                    info_hash,
+                    tracker_info.peers.0[peer],
+                ));
+            });
+            let all_pieces: Vec<u8> = join_all(tasks)
                 .await
-                .expect("bitfield msg")
-                .context("read bitfield")?;
+                .into_iter()
+                .flat_map(|r| r.unwrap())
+                .collect();
 
-            peer.send(Message {
-                tag: MessageTag::Interested,
-                payload: Vec::new(),
-            })
-            .await
-            .context("send interested message")?;
-
-            let unchoke = peer
-                .next()
-                .await
-                .expect("unchoke msg")
-                .context("read unchoke")?;
-            assert_eq!(unchoke.tag, MessageTag::Unchoke);
-            assert!(unchoke.payload.is_empty());
-
-            let mut all_pieces = Vec::with_capacity(length);
-            for piece_id in 0..tor.info.pieces.0.len() {
-                let piece_size = if piece_id == tor.info.pieces.0.len() - 1 {
-                    let md = length % tor.info.plength;
-                    if md == 0 {
-                        tor.info.plength
-                    } else {
-                        md
-                    }
-                } else {
-                    tor.info.plength
-                };
-
-                let nblocks = (piece_size + BLOCK_MAX - 1) / BLOCK_MAX;
-                let mut all_blocks = Vec::with_capacity(piece_size);
-                for block in 0..nblocks {
-                    let block_size = if block == nblocks - 1 {
-                        let md = piece_size % BLOCK_MAX;
-                        if md == 0 {
-                            BLOCK_MAX
-                        } else {
-                            md
-                        }
-                    } else {
-                        BLOCK_MAX
-                    };
-
-                    let mut request = Request::new(
-                        piece_id as u32,
-                        (block * BLOCK_MAX) as u32,
-                        block_size as u32,
-                    );
-                    peer.send(Message {
-                        tag: MessageTag::Request,
-                        payload: request.as_bytes_mut().to_vec(),
-                    })
-                    .await
-                    .with_context(|| format!("send request for block {block}"))?;
-
-                    let piece = peer
-                        .next()
-                        .await
-                        .expect("receive piece msg")
-                        .context("invalid piece msg")?;
-                    let piece = Piece::ref_from_bytes(&piece.payload)
-                        .expect("always get all Piece response fields from peer");
-                    all_blocks.extend(piece.block())
-                }
-
-                let piece_hash = &tor.info.pieces.0[piece_id];
-                let mut hasher = Sha1::new();
-                hasher.update(&all_blocks);
-                let hash: [u8; 20] = hasher
-                    .finalize()
-                    .try_into()
-                    .expect("GenericArray<_, 20> == [_; 20]");
-                assert_eq!(&hash, piece_hash);
-
-                all_pieces.extend(&all_blocks);
-                println!("Piece {piece_id} downloaded.");
-            }
             tokio::fs::write(&output, all_pieces)
                 .await
                 .context("write out downloaded piece")?;
@@ -459,6 +384,108 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn download_piece(
+    piece_id: usize,
+    npiece: usize,
+    plength: usize,
+    piece_hash: [u8; 20],
+    length: usize,
+    info_hash: [u8; 20],
+    peer: SocketAddrV4,
+) -> anyhow::Result<Vec<u8>> {
+    println!("Downloading piece {piece_id} of {npiece} from {peer}...");
+    let mut peer = TcpStream::connect(peer).await.context("connect peer")?;
+
+    let mut handshake = Handshake::new(info_hash, *b"00112233445566778899");
+    {
+        let handshake_bytes = handshake.as_bytes_mut();
+        peer.write_all(handshake_bytes)
+            .await
+            .context("send handshake")?;
+        peer.read_exact(handshake_bytes)
+            .await
+            .context("read handshake")?;
+    }
+    let mut peer = tokio_util::codec::Framed::new(peer, MessageFramer);
+    let bitfield = peer
+        .next()
+        .await
+        .expect("bitfield msg")
+        .context("read bitfield")?;
+
+    peer.send(Message {
+        tag: MessageTag::Interested,
+        payload: Vec::new(),
+    })
+    .await
+    .context("send interested message")?;
+
+    let unchoke = peer
+        .next()
+        .await
+        .expect("unchoke msg")
+        .context("read unchoke")?;
+    assert_eq!(unchoke.tag, MessageTag::Unchoke);
+    assert!(unchoke.payload.is_empty());
+    let piece_size = if piece_id == npiece - 1 {
+        let md = length % plength;
+        if md == 0 {
+            plength
+        } else {
+            md
+        }
+    } else {
+        plength
+    };
+
+    let nblocks = (piece_size + BLOCK_MAX - 1) / BLOCK_MAX;
+    let mut all_blocks = Vec::with_capacity(piece_size);
+    for block in 0..nblocks {
+        let block_size = if block == nblocks - 1 {
+            let md = piece_size % BLOCK_MAX;
+            if md == 0 {
+                BLOCK_MAX
+            } else {
+                md
+            }
+        } else {
+            BLOCK_MAX
+        };
+
+        let mut request = Request::new(
+            piece_id as u32,
+            (block * BLOCK_MAX) as u32,
+            block_size as u32,
+        );
+        peer.send(Message {
+            tag: MessageTag::Request,
+            payload: request.as_bytes_mut().to_vec(),
+        })
+        .await
+        .with_context(|| format!("send request for block {block}"))?;
+
+        let piece = peer
+            .next()
+            .await
+            .expect("receive piece msg")
+            .context("invalid piece msg")?;
+        let piece = Piece::ref_from_bytes(&piece.payload)
+            .expect("always get all Piece response fields from peer");
+        all_blocks.extend(piece.block())
+    }
+
+    let mut hasher = Sha1::new();
+    hasher.update(&all_blocks);
+    let hash: [u8; 20] = hasher
+        .finalize()
+        .try_into()
+        .expect("GenericArray<_, 20> == [_; 20]");
+    assert_eq!(&hash, &piece_hash);
+    println!("Piece {piece_id} downloaded.");
+
+    Ok(all_blocks)
 }
 
 fn urlencode(bytes: &[u8; 20]) -> String {
