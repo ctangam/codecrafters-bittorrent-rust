@@ -2,9 +2,11 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 use futures_util::{future::join_all, SinkExt, StreamExt};
+use rand::{distributions::Alphanumeric, Rng};
 use serde_json::{self, json};
 use sha1::{Digest, Sha1};
 use std::{
+    hash::RandomState,
     net::SocketAddrV4,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -21,7 +23,11 @@ use tokio::{
 };
 
 use bittorrent_starter_rust::{
-    magnet::Magnet, peer::{Handshake, Message, MessageFramer, MessageTag, Piece, Request}, torrent::{self, Torrent}, tracker::{TrackerRequest, TrackerResponse}, BLOCK_MAX
+    magnet::Magnet,
+    peer::{Handshake, Message, MessageFramer, MessageTag, Piece, Request},
+    torrent::{self, Torrent},
+    tracker::{TrackerRequest, TrackerResponse},
+    BLOCK_MAX,
 };
 
 #[derive(Debug, Parser)]
@@ -415,8 +421,13 @@ async fn main() -> anyhow::Result<()> {
             let tracker_url = magnet.tracker_url.unwrap();
             let info_hash = magnet.info_hash;
 
+            let peer_id = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(20)
+                .map(char::from)
+                .collect();
             let params = TrackerRequest {
-                peer_id: "00112233445566778899".into(),
+                peer_id,
                 port: 6881,
                 uploaded: 0,
                 downloaded: 0,
@@ -439,9 +450,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let peer = tracker_info.peers.0[0];
-            let mut peer = TcpStream::connect(peer)
-                .await
-                .context("connect peer")?;
+            let mut peer = TcpStream::connect(peer).await.context("connect peer")?;
 
             let mut handshake = Handshake::new(info_hash, *b"00112233445566778899");
             {

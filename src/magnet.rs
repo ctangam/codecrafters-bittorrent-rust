@@ -1,6 +1,5 @@
 use reqwest::Url;
 
-
 pub struct Magnet {
     pub info_hash: [u8; 20],
     pub name: Option<String>,
@@ -19,17 +18,18 @@ impl Magnet {
     pub fn parse(magnet: &str) -> Self {
         let index = magnet.find("urn:btih:").unwrap();
         let mut info_hash = [0u8; 20];
-    
+
         hex::decode_to_slice(&magnet[index + 9..index + 49], &mut info_hash).unwrap();
 
         let name = magnet
             .find("dn=")
             .map(|index| magnet[index + 3..].to_string());
 
-            
-        let tracker_url = magnet
-            .find("tr=")
-            .map(|index| urlencoding::decode(&magnet[index + 3..]).unwrap().to_string());
+        let tracker_url = magnet.find("tr=").map(|index| {
+            urlencoding::decode(&magnet[index + 3..])
+                .unwrap()
+                .to_string()
+        });
 
         Self {
             info_hash,
