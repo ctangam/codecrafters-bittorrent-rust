@@ -403,7 +403,7 @@ async fn main() -> anyhow::Result<()> {
         Command::MagnetParse { magnet_link } => {
             let magnet = Magnet::parse(&magnet_link);
             println!("Tracker URL: {}", magnet.tracker_url.unwrap());
-            println!("Info hash: {}", hex::encode(magnet.info_hash));
+            println!("Info Hash: {}", hex::encode(magnet.info_hash));
         }
     }
 
