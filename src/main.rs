@@ -65,7 +65,11 @@ enum Command {
 
     MagnetParse {
         magnet_link: String,
-    }
+    },
+
+    MagnetHandshake {
+        magnet_link: String,
+    },
 }
 
 #[allow(dead_code)]
@@ -130,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
             let tor: Torrent =
                 serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
             println!("Tracker URL: {}", tor.announce);
-            let length = if let torrent::Keys::Single { length } = tor.info.keys {
+            let length = if let torrent::Keys::SingleFile { length } = tor.info.keys {
                 length
             } else {
                 todo!();
@@ -148,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
             let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
             let tor: Torrent =
                 serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
-            let length = if let torrent::Keys::Single { length } = tor.info.keys {
+            let length = if let torrent::Keys::SingleFile { length } = tor.info.keys {
                 length
             } else {
                 todo!();
@@ -210,7 +214,7 @@ async fn main() -> anyhow::Result<()> {
             let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
             let tor: Torrent =
                 serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
-            let length = if let torrent::Keys::Single { length } = tor.info.keys {
+            let length = if let torrent::Keys::SingleFile { length } = tor.info.keys {
                 length
             } else {
                 todo!();
@@ -257,6 +261,7 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .expect("bitfield msg")
                 .context("read bitfield")?;
+            assert_eq!(bitfield.tag, MessageTag::Bitfield);
 
             peer.send(Message {
                 tag: MessageTag::Interested,
@@ -338,7 +343,7 @@ async fn main() -> anyhow::Result<()> {
             let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
             let tor: Torrent =
                 serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
-            let length = if let torrent::Keys::Single { length } = tor.info.keys {
+            let length = if let torrent::Keys::SingleFile { length } = tor.info.keys {
                 length
             } else {
                 todo!();
@@ -404,6 +409,52 @@ async fn main() -> anyhow::Result<()> {
             let magnet = Magnet::parse(&magnet_link);
             println!("Tracker URL: {}", magnet.tracker_url.unwrap());
             println!("Info Hash: {}", hex::encode(magnet.info_hash));
+        }
+        Command::MagnetHandshake { magnet_link } => {
+            let magnet = Magnet::parse(&magnet_link);
+            let tracker_url = magnet.tracker_url.unwrap();
+            let info_hash = magnet.info_hash;
+
+            let params = TrackerRequest {
+                peer_id: "00112233445566778899".into(),
+                port: 6881,
+                uploaded: 0,
+                downloaded: 0,
+                left: 999,
+                compact: 1,
+            };
+            let encoded = serde_urlencoded::to_string(params).context("url encode params")?;
+            let query_url = format!(
+                "{}?{}&info_hash={}",
+                tracker_url,
+                encoded,
+                urlencode(&info_hash)
+            );
+            let res = reqwest::get(query_url).await.context("query tracker")?;
+            let res = res.bytes().await.context("fetch tracker res")?;
+            let tracker_info: TrackerResponse =
+                serde_bencode::from_bytes(&res).context("parse tracker res")?;
+            for addr in &tracker_info.peers.0 {
+                println!("{}:{}", addr.ip(), addr.port())
+            }
+
+            let peer = tracker_info.peers.0[0];
+            let mut peer = TcpStream::connect(peer)
+                .await
+                .context("connect peer")?;
+
+            let mut handshake = Handshake::new(info_hash, *b"00112233445566778899");
+            {
+                let handshake_bytes = handshake.as_bytes_mut();
+                peer.write_all(handshake_bytes)
+                    .await
+                    .context("send handshake")?;
+                peer.read_exact(handshake_bytes)
+                    .await
+                    .context("read handshake")?;
+            }
+
+            println!("Peer ID: {}", hex::encode(&handshake.peer_id));
         }
     }
 
