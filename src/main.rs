@@ -476,12 +476,12 @@ async fn main() -> anyhow::Result<()> {
                 peer.write_all(msg.as_bytes())
                     .await
                     .context("send ut_metadata")?;
-                let mut msg = vec![0u8; msg.len()];
-                peer.read_exact(&mut msg)
-                    .await
-                    .context("read ut_metadata")?;
+                // let mut msg = vec![0u8; msg.len()];
+                // peer.read_exact(&mut msg)
+                //     .await
+                //     .context("read ut_metadata")?;
 
-                println!("{}", std::str::from_utf8(&msg).unwrap());
+                // println!("{}", std::str::from_utf8(&msg).unwrap());
             }
         }
     }
