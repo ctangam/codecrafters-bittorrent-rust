@@ -1,4 +1,3 @@
-use reqwest::Url;
 
 pub struct Magnet {
     pub info_hash: [u8; 20],

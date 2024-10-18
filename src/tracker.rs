@@ -36,7 +36,7 @@ pub struct TrackerResponse {
     /// An integer, indicating how often your client should make a request to the tracker in seconds.
     ///
     /// You can ignore this value for the purposes of this challenge.
-    pub interval: usize,
+    // pub interval: usize,
 
     /// A string, which contains list of peers that your client can connect to.
     ///

@@ -1,12 +1,11 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
-use futures_util::{future::join_all, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use rand::{distributions::Alphanumeric, Rng};
 use serde_json::{self, json};
 use sha1::{Digest, Sha1};
 use std::{
-    hash::RandomState,
     net::SocketAddrV4,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -14,12 +13,8 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    join,
     net::TcpStream,
-    sync::{
-        broadcast,
-        mpsc::{self, Sender},
-    },
+    sync::mpsc::{self, Sender},
 };
 
 use bittorrent_starter_rust::{
@@ -421,13 +416,13 @@ async fn main() -> anyhow::Result<()> {
             let tracker_url = magnet.tracker_url.unwrap();
             let info_hash = magnet.info_hash;
 
-            let peer_id = rand::thread_rng()
+            let peer_id: String = rand::thread_rng()
                 .sample_iter(&Alphanumeric)
                 .take(20)
                 .map(char::from)
                 .collect();
             let params = TrackerRequest {
-                peer_id,
+                peer_id: peer_id.clone(),
                 port: 6881,
                 uploaded: 0,
                 downloaded: 0,
@@ -452,7 +447,7 @@ async fn main() -> anyhow::Result<()> {
             let peer = tracker_info.peers.0[0];
             let mut peer = TcpStream::connect(peer).await.context("connect peer")?;
 
-            let mut handshake = Handshake::new(info_hash, *b"00112233445566778899");
+            let mut handshake = Handshake::new(info_hash, peer_id.as_bytes().try_into().unwrap());
             {
                 let handshake_bytes = handshake.as_bytes_mut();
                 peer.write_all(handshake_bytes)
