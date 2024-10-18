@@ -6,10 +6,7 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde_json::{self, json};
 use sha1::{Digest, Sha1};
 use std::{
-    net::SocketAddrV4,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    vec,
+    collections::HashMap, net::SocketAddrV4, path::PathBuf, sync::{Arc, Mutex}, vec
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -445,20 +442,47 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let peer = tracker_info.peers.0[0];
-            let mut peer = TcpStream::connect(peer).await.context("connect peer")?;
+            let mut stream = TcpStream::connect(peer).await.context("connect peer")?;
 
             let mut handshake = Handshake::new(info_hash, peer_id.as_bytes().try_into().unwrap());
-            {
+            let support = {
                 let handshake_bytes = handshake.as_bytes_mut();
-                peer.write_all(handshake_bytes)
+                stream.write_all(handshake_bytes)
                     .await
                     .context("send handshake")?;
-                peer.read_exact(handshake_bytes)
+                stream.read_exact(handshake_bytes)
                     .await
                     .context("read handshake")?;
-            }
+
+                let handshake = Handshake::ref_from_bytes(handshake_bytes);
+                println!("reserved: {}", hex::encode(&handshake.reserved));
+                handshake.reserved[5] & 0b0001_0000 != 0
+            };
 
             println!("Peer ID: {}", hex::encode(&handshake.peer_id));
+
+            let mut peer = tokio_util::codec::Framed::new(stream, MessageFramer);
+            let bitfield = peer
+                .next()
+                .await
+                .expect("bitfield msg")
+                .context("read bitfield")?;
+            assert_eq!(bitfield.tag, MessageTag::Bitfield);
+
+            if support {
+                let msg = HashMap::from([("m", HashMap::from([("ut_metadata", 16)]))]);
+                let msg = serde_json::to_string(&msg).unwrap();
+                let mut peer = peer.into_inner();
+                peer.write_all(msg.as_bytes())
+                    .await
+                    .context("send ut_metadata")?;
+                let mut msg = vec![0u8; msg.len()];
+                peer.read_exact(&mut msg)
+                    .await
+                    .context("read ut_metadata")?;
+
+                println!("{}", std::str::from_utf8(&msg).unwrap());
+            }
         }
     }
 

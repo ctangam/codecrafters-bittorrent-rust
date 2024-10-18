@@ -279,6 +279,11 @@ impl Handshake {
         let bytes: &mut [u8; std::mem::size_of::<Self>()] = unsafe { &mut *bytes };
         bytes
     }
+
+    pub fn ref_from_bytes(bytes: &[u8]) -> &Self {
+        let handshake = &bytes[..std::mem::size_of::<Self>()] as *const [u8] as *const Handshake;
+        unsafe { &*handshake }
+    }
 }
 
 #[repr(C)]
