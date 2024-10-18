@@ -39,3 +39,4 @@ futures-core = "0.3"
 futures-sink = "0.3"
 futures-util = { version = "0.3", features = ["sink"] }
 kanal = "0.1.0-pre8"
+urlencoding = "2.1.3"
