@@ -474,13 +474,14 @@ async fn main() -> anyhow::Result<()> {
             assert_eq!(bitfield.tag, MessageTag::Bitfield);
 
             if support {
+                let mut payload = vec![0];
                 let data: HashMap<String, HashMap<String, u32>> =
                     HashMap::from([("m".into(), HashMap::from([("ut_metadata".into(), 16)]))]);
                 let data = serde_bencode::to_bytes(&data)?;
-                let mut extension_handshake = Extended { id: 0, data };
+                payload.extend_from_slice(&data);
                 peer.send(Message {
                     tag: MessageTag::Extended,
-                    payload: extension_handshake.as_bytes_mut().to_vec(),
+                    payload,
                 })
                 .await
                 .context("send extended message")?;
@@ -644,4 +645,15 @@ fn urlencode(bytes: &[u8; 20]) -> String {
     }
 
     encoded
+}
+
+#[test]
+fn test_extended() {
+    let data: HashMap<String, HashMap<String, u8>> =
+        HashMap::from([("m".into(), HashMap::from([("ut_metadata".into(), 16)]))]);
+    let data = serde_bencode::to_bytes(&data).unwrap();
+    println!("data: {:?}", data);
+    let mut extension_handshake = Extended { id: 0, data };
+    let extension_handshake_bytes = extension_handshake.as_bytes_mut();
+    println!("extension_handshake_bytes: {:?}", hex::encode(extension_handshake_bytes));
 }
