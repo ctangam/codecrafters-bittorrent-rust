@@ -20,7 +20,7 @@ use tokio::{
 
 use bittorrent_starter_rust::{
     magnet::Magnet,
-    peer::{Extended, Handshake, Message, MessageFramer, MessageTag, Piece, Request},
+    peer::{ExtendedMsg, Handshake, InnerID, Message, MessageFramer, MessageTag, Piece, Request},
     torrent::{self, Torrent},
     tracker::{TrackerRequest, TrackerResponse},
     BLOCK_MAX,
@@ -475,8 +475,11 @@ async fn main() -> anyhow::Result<()> {
 
             if support {
                 let mut payload = vec![0];
-                let data: HashMap<String, HashMap<String, u32>> =
-                    HashMap::from([("m".into(), HashMap::from([("ut_metadata".into(), 16)]))]);
+                let data: ExtendedMsg = ExtendedMsg {
+                    m: InnerID {
+                        ut_metadata: 0,
+                    },
+                };
                 let data = serde_bencode::to_bytes(&data)?;
                 payload.extend_from_slice(&data);
                 peer.send(Message {
@@ -493,6 +496,9 @@ async fn main() -> anyhow::Result<()> {
                     .context("read extension handshake")?;
                 assert_eq!(extension_handshake.tag, MessageTag::Extended);
                 assert_eq!(extension_handshake.payload[0], 0);
+
+                let data: ExtendedMsg = serde_bencode::from_bytes(&extension_handshake.payload[1..])?;
+                println!("Peer Metadata Extension ID: {}", data.m.ut_metadata);
             }
         }
     }
@@ -645,15 +651,4 @@ fn urlencode(bytes: &[u8; 20]) -> String {
     }
 
     encoded
-}
-
-#[test]
-fn test_extended() {
-    let data: HashMap<String, HashMap<String, u8>> =
-        HashMap::from([("m".into(), HashMap::from([("ut_metadata".into(), 16)]))]);
-    let data = serde_bencode::to_bytes(&data).unwrap();
-    println!("data: {:?}", data);
-    let mut extension_handshake = Extended { id: 0, data };
-    let extension_handshake_bytes = extension_handshake.as_bytes_mut();
-    println!("extension_handshake_bytes: {:?}", hex::encode(extension_handshake_bytes));
 }

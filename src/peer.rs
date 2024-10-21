@@ -2,6 +2,7 @@ use crate::BLOCK_MAX;
 use anyhow::Context;
 use bytes::{Buf, BufMut, BytesMut};
 use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddrV4;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -372,20 +373,14 @@ impl Piece {
     }
 }
 
-#[repr(C)]
-#[repr(packed)]
-pub struct Extended {
-    pub id: u8,
-    pub data: Vec<u8>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtendedMsg {
+    pub m: InnerID,
 }
 
-impl Extended {
-    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
-        let bytes = self as *mut Self as *mut [u8; std::mem::size_of::<Self>()];
-        // Safety: Self is a POD with repr(c) and repr(packed)
-        let bytes: &mut [u8; std::mem::size_of::<Self>()] = unsafe { &mut *bytes };
-        bytes
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InnerID {
+    pub ut_metadata: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
