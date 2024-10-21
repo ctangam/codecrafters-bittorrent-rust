@@ -740,7 +740,7 @@ async fn main() -> anyhow::Result<()> {
                 let data: ExtensionHeader = serde_bencode::from_bytes(&extension_handshake.payload[1..])?;
                 println!("Peer Metadata Extension ID: {}", data.m.ut_metadata);
 
-                let mut payload = vec![0];
+                let mut payload = vec![1];
                 let data = ExtensionMsg {
                     msg_type: 0,
                     piece: 0,
@@ -761,7 +761,6 @@ async fn main() -> anyhow::Result<()> {
                     .expect("extension msg")
                     .context("read extension message")?;
                 assert_eq!(extension_msg.tag, MessageTag::Extended);
-                assert_eq!(extension_handshake.payload[0], 0);
 
                 let data: ExtensionMsg = serde_bencode::from_bytes(&extension_msg.payload[1..])?;
                 assert_eq!(data.msg_type, 1);
