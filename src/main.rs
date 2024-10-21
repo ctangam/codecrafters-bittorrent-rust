@@ -75,6 +75,13 @@ enum Command {
 
     MagnetInfo {
         magnet_link: String,
+    },
+
+    MagnetDownloadPiece {
+        #[arg(short)]
+        output: PathBuf,
+        magnet_link: String,
+        piece_id: usize,
     }
 }
 
@@ -621,6 +628,14 @@ async fn main() -> anyhow::Result<()> {
                 assert_eq!(data.msg_type, 1);
                 assert_eq!(data.piece, 0);
                 let info = &extension_msg.payload[extension_msg.payload.len() - data.total_size.unwrap()..];
+                let mut hasher = Sha1::new();
+                hasher.update(info);
+                let hash: [u8; 20] = hasher
+                    .finalize()
+                    .try_into()
+                    .expect("GenericArray<_, 20> == [_; 20]");
+                assert_eq!(info_hash, hash);
+
                 let info: Info = serde_bencode::from_bytes(info)?;
                 let length = if let torrent::Keys::SingleFile { length } = info.keys {
                     length
@@ -634,6 +649,206 @@ async fn main() -> anyhow::Result<()> {
                 for hash in &info.pieces.0 {
                     println!("{}", hex::encode(hash))
                 }
+            }
+        }
+        Command::MagnetDownloadPiece { output, magnet_link, piece_id } => {
+            let magnet = Magnet::parse(&magnet_link);
+            let tracker_url = magnet.tracker_url.unwrap();
+            println!("Tracker URL: {}", tracker_url);
+            let info_hash = magnet.info_hash;
+
+            let peer_id: String = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(20)
+                .map(char::from)
+                .collect();
+            let params = TrackerRequest {
+                peer_id: peer_id.clone(),
+                port: 6881,
+                uploaded: 0,
+                downloaded: 0,
+                left: 999,
+                compact: 1,
+            };
+            let encoded = serde_urlencoded::to_string(params).context("url encode params")?;
+            let query_url = format!(
+                "{}?{}&info_hash={}",
+                tracker_url,
+                encoded,
+                urlencode(&info_hash)
+            );
+            let res = reqwest::get(query_url).await.context("query tracker")?;
+            let res = res.bytes().await.context("fetch tracker res")?;
+            let tracker_info: TrackerResponse =
+                serde_bencode::from_bytes(&res).context("parse tracker res")?;
+            for addr in &tracker_info.peers.0 {
+                println!("{}:{}", addr.ip(), addr.port())
+            }
+
+            let peer = tracker_info.peers.0[0];
+            let mut peer = TcpStream::connect(peer).await.context("connect peer")?;
+
+            let mut handshake = Handshake::new(info_hash, peer_id.as_bytes().try_into().unwrap());
+            let support = {
+                let handshake_bytes = handshake.as_bytes_mut();
+                peer.write_all(handshake_bytes)
+                    .await
+                    .context("send handshake")?;
+                peer.read_exact(handshake_bytes)
+                    .await
+                    .context("read handshake")?;
+
+                let handshake = Handshake::ref_from_bytes(handshake_bytes);
+                println!("reserved: {}", hex::encode(&handshake.reserved[5..6]));
+                handshake.reserved[5] & 0x10 == 0x10
+            };
+
+            println!("Peer ID: {}", hex::encode(&handshake.peer_id));
+
+            let mut peer = tokio_util::codec::Framed::new(peer, MessageFramer);
+            let bitfield = peer
+                .next()
+                .await
+                .expect("bitfield msg")
+                .context("read bitfield")?;
+            assert_eq!(bitfield.tag, MessageTag::Bitfield);
+
+            if support {
+                let mut payload = vec![0];
+                let data: ExtensionHeader = ExtensionHeader {
+                    m: InnerID {
+                        ut_metadata: 88,
+                    },
+                };
+                let data = serde_bencode::to_bytes(&data)?;
+                payload.extend_from_slice(&data);
+                peer.send(Message {
+                    tag: MessageTag::Extended,
+                    payload,
+                })
+                .await
+                .context("send extended message")?;
+
+                let extension_handshake = peer
+                    .next()
+                    .await
+                    .expect("extension handshake msg")
+                    .context("read extension handshake")?;
+                assert_eq!(extension_handshake.tag, MessageTag::Extended);
+                assert_eq!(extension_handshake.payload[0], 0);
+
+                let data: ExtensionHeader = serde_bencode::from_bytes(&extension_handshake.payload[1..])?;
+                println!("Peer Metadata Extension ID: {}", data.m.ut_metadata);
+
+                let mut payload = vec![0];
+                let data = ExtensionMsg {
+                    msg_type: 0,
+                    piece: 0,
+                    total_size: None,
+                };
+                let data = serde_bencode::to_bytes(&data)?;
+                payload.extend_from_slice(&data);
+                peer.send(Message {
+                    tag: MessageTag::Extended,
+                    payload,
+                })
+                .await
+                .context("send extension message")?;
+
+                let extension_msg = peer
+                    .next()
+                    .await
+                    .expect("extension msg")
+                    .context("read extension message")?;
+                assert_eq!(extension_msg.tag, MessageTag::Extended);
+                assert_eq!(extension_handshake.payload[0], 0);
+
+                let data: ExtensionMsg = serde_bencode::from_bytes(&extension_msg.payload[1..])?;
+                assert_eq!(data.msg_type, 1);
+                assert_eq!(data.piece, 0);
+                let info = &extension_msg.payload[extension_msg.payload.len() - data.total_size.unwrap()..];
+                let mut hasher = Sha1::new();
+                hasher.update(info);
+                let hash: [u8; 20] = hasher
+                    .finalize()
+                    .try_into()
+                    .expect("GenericArray<_, 20> == [_; 20]");
+                assert_eq!(info_hash, hash);
+
+                let info: Info = serde_bencode::from_bytes(info)?;
+                let length = if let torrent::Keys::SingleFile { length } = info.keys {
+                    length
+                } else {
+                    todo!();
+                };
+                println!("Length: {length}");
+                println!("Info Hash: {}", hex::encode(info_hash));
+                println!("Piece Length: {}", info.plength);
+                println!("Piece Hashes:");
+                for hash in &info.pieces.0 {
+                    println!("{}", hex::encode(hash))
+                }
+
+                let piece_size = if piece_id == info.pieces.0.len() - 1 {
+                    let md = length % info.plength;
+                    if md == 0 {
+                        info.plength
+                    } else {
+                        md
+                    }
+                } else {
+                    info.plength
+                };
+    
+                let nblocks = (piece_size + BLOCK_MAX - 1) / BLOCK_MAX;
+                let mut all_blocks = Vec::with_capacity(piece_size);
+                for block in 0..nblocks {
+                    let block_size = if block == nblocks - 1 {
+                        let md = piece_size % BLOCK_MAX;
+                        if md == 0 {
+                            BLOCK_MAX
+                        } else {
+                            md
+                        }
+                    } else {
+                        BLOCK_MAX
+                    };
+    
+                    let mut request = Request::new(
+                        piece_id as u32,
+                        (block * BLOCK_MAX) as u32,
+                        block_size as u32,
+                    );
+                    peer.send(Message {
+                        tag: MessageTag::Request,
+                        payload: request.as_bytes_mut().to_vec(),
+                    })
+                    .await
+                    .with_context(|| format!("send request for block {block}"))?;
+    
+                    let piece = peer
+                        .next()
+                        .await
+                        .expect("receive piece msg")
+                        .context("invalid piece msg")?;
+                    let piece = Piece::ref_from_bytes(&piece.payload)
+                        .expect("always get all Piece response fields from peer");
+                    all_blocks.extend(piece.block())
+                }
+    
+                let piece_hash = &info.pieces.0[piece_id];
+                let mut hasher = Sha1::new();
+                hasher.update(&all_blocks);
+                let hash: [u8; 20] = hasher
+                    .finalize()
+                    .try_into()
+                    .expect("GenericArray<_, 20> == [_; 20]");
+                assert_eq!(&hash, piece_hash);
+    
+                tokio::fs::write(&output, all_blocks)
+                    .await
+                    .context("write out downloaded piece")?;
+                println!("Piece {piece_id} downloaded to {}.", output.display());
             }
         }
     }
