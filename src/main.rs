@@ -20,8 +20,8 @@ use tokio::{
 
 use bittorrent_starter_rust::{
     magnet::Magnet,
-    peer::{ExtensionHeader, Handshake, InnerID, Message, MessageFramer, MessageTag, ExtensionMsg, Piece, Request},
-    torrent::{self, Torrent},
+    peer::{ExtensionHeader, ExtensionMsg, Handshake, InnerID, Message, MessageFramer, MessageTag, Piece, Request},
+    torrent::{self, Info, Torrent},
     tracker::{TrackerRequest, TrackerResponse},
     BLOCK_MAX,
 };
@@ -597,6 +597,7 @@ async fn main() -> anyhow::Result<()> {
                 let data = ExtensionMsg {
                     msg_type: 0,
                     piece: 0,
+                    total_size: None,
                 };
                 let data = serde_bencode::to_bytes(&data)?;
                 payload.extend_from_slice(&data);
@@ -607,15 +608,31 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("send extension message")?;
 
-                // let extension_msg = peer
-                //     .next()
-                //     .await
-                //     .expect("extension msg")
-                //     .context("read extension message")?;
-                // assert_eq!(extension_msg.tag, MessageTag::Extended);
-                // assert_eq!(extension_handshake.payload[0], 0);
+                let extension_msg = peer
+                    .next()
+                    .await
+                    .expect("extension msg")
+                    .context("read extension message")?;
+                assert_eq!(extension_msg.tag, MessageTag::Extended);
+                assert_eq!(extension_handshake.payload[0], 0);
 
-                // let data: ExtensionMsg = serde_bencode::from_bytes(&extension_msg.payload[1..])?;
+                let data: ExtensionMsg = serde_bencode::from_bytes(&extension_msg.payload[1..])?;
+                assert_eq!(data.msg_type, 1);
+                assert_eq!(data.piece, 0);
+                let info = &extension_msg.payload[extension_msg.payload.len() - data.total_size.unwrap()..];
+                let info: Info = serde_bencode::from_bytes(info)?;
+                let length = if let torrent::Keys::SingleFile { length } = info.keys {
+                    length
+                } else {
+                    todo!();
+                };
+                println!("Length: {length}");
+                println!("Info Hash: {}", hex::encode(info_hash));
+                println!("Piece Length: {}", info.plength);
+                println!("Piece Hashes:");
+                for hash in &info.pieces.0 {
+                    println!("{}", hex::encode(hash))
+                }
             }
         }
     }

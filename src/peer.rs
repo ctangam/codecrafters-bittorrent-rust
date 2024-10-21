@@ -387,6 +387,7 @@ pub struct InnerID {
 pub struct ExtensionMsg {
     pub msg_type: u8,
     pub piece: u8,
+    pub total_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
