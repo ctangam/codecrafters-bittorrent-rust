@@ -20,7 +20,7 @@ use tokio::{
 
 use bittorrent_starter_rust::{
     magnet::Magnet,
-    peer::{ExtendedMsg, Handshake, InnerID, Message, MessageFramer, MessageTag, Piece, Request},
+    peer::{ExtensionHeader, Handshake, InnerID, Message, MessageFramer, MessageTag, ExtensionMsg, Piece, Request},
     torrent::{self, Torrent},
     tracker::{TrackerRequest, TrackerResponse},
     BLOCK_MAX,
@@ -72,6 +72,10 @@ enum Command {
     MagnetHandshake {
         magnet_link: String,
     },
+
+    MagnetInfo {
+        magnet_link: String,
+    }
 }
 
 #[allow(dead_code)]
@@ -475,7 +479,7 @@ async fn main() -> anyhow::Result<()> {
 
             if support {
                 let mut payload = vec![0];
-                let data: ExtendedMsg = ExtendedMsg {
+                let data: ExtensionHeader = ExtensionHeader {
                     m: InnerID {
                         ut_metadata: 88,
                     },
@@ -497,8 +501,121 @@ async fn main() -> anyhow::Result<()> {
                 assert_eq!(extension_handshake.tag, MessageTag::Extended);
                 assert_eq!(extension_handshake.payload[0], 0);
 
-                let data: ExtendedMsg = serde_bencode::from_bytes(&extension_handshake.payload[1..])?;
+                let data: ExtensionHeader = serde_bencode::from_bytes(&extension_handshake.payload[1..])?;
                 println!("Peer Metadata Extension ID: {}", data.m.ut_metadata);
+            }
+        }
+        Command::MagnetInfo { magnet_link } => {
+            let magnet = Magnet::parse(&magnet_link);
+            let tracker_url = magnet.tracker_url.unwrap();
+            let info_hash = magnet.info_hash;
+
+            let peer_id: String = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(20)
+                .map(char::from)
+                .collect();
+            let params = TrackerRequest {
+                peer_id: peer_id.clone(),
+                port: 6881,
+                uploaded: 0,
+                downloaded: 0,
+                left: 999,
+                compact: 1,
+            };
+            let encoded = serde_urlencoded::to_string(params).context("url encode params")?;
+            let query_url = format!(
+                "{}?{}&info_hash={}",
+                tracker_url,
+                encoded,
+                urlencode(&info_hash)
+            );
+            let res = reqwest::get(query_url).await.context("query tracker")?;
+            let res = res.bytes().await.context("fetch tracker res")?;
+            let tracker_info: TrackerResponse =
+                serde_bencode::from_bytes(&res).context("parse tracker res")?;
+            for addr in &tracker_info.peers.0 {
+                println!("{}:{}", addr.ip(), addr.port())
+            }
+
+            let peer = tracker_info.peers.0[0];
+            let mut peer = TcpStream::connect(peer).await.context("connect peer")?;
+
+            let mut handshake = Handshake::new(info_hash, peer_id.as_bytes().try_into().unwrap());
+            let support = {
+                let handshake_bytes = handshake.as_bytes_mut();
+                peer.write_all(handshake_bytes)
+                    .await
+                    .context("send handshake")?;
+                peer.read_exact(handshake_bytes)
+                    .await
+                    .context("read handshake")?;
+
+                let handshake = Handshake::ref_from_bytes(handshake_bytes);
+                println!("reserved: {}", hex::encode(&handshake.reserved[5..6]));
+                handshake.reserved[5] & 0x10 == 0x10
+            };
+
+            println!("Peer ID: {}", hex::encode(&handshake.peer_id));
+
+            let mut peer = tokio_util::codec::Framed::new(peer, MessageFramer);
+            let bitfield = peer
+                .next()
+                .await
+                .expect("bitfield msg")
+                .context("read bitfield")?;
+            assert_eq!(bitfield.tag, MessageTag::Bitfield);
+
+            if support {
+                let mut payload = vec![0];
+                let data: ExtensionHeader = ExtensionHeader {
+                    m: InnerID {
+                        ut_metadata: 88,
+                    },
+                };
+                let data = serde_bencode::to_bytes(&data)?;
+                payload.extend_from_slice(&data);
+                peer.send(Message {
+                    tag: MessageTag::Extended,
+                    payload,
+                })
+                .await
+                .context("send extended message")?;
+
+                let extension_handshake = peer
+                    .next()
+                    .await
+                    .expect("extension handshake msg")
+                    .context("read extension handshake")?;
+                assert_eq!(extension_handshake.tag, MessageTag::Extended);
+                assert_eq!(extension_handshake.payload[0], 0);
+
+                let data: ExtensionHeader = serde_bencode::from_bytes(&extension_handshake.payload[1..])?;
+                println!("Peer Metadata Extension ID: {}", data.m.ut_metadata);
+
+                let mut payload = vec![0];
+                let data = ExtensionMsg {
+                    msg_type: 0,
+                    piece: 0,
+                };
+                let data = serde_bencode::to_bytes(&data)?;
+                payload.extend_from_slice(&data);
+                peer.send(Message {
+                    tag: MessageTag::Extended,
+                    payload,
+                })
+                .await
+                .context("send extension message")?;
+
+                // let extension_msg = peer
+                //     .next()
+                //     .await
+                //     .expect("extension msg")
+                //     .context("read extension message")?;
+                // assert_eq!(extension_msg.tag, MessageTag::Extended);
+                // assert_eq!(extension_handshake.payload[0], 0);
+
+                // let data: ExtensionMsg = serde_bencode::from_bytes(&extension_msg.payload[1..])?;
             }
         }
     }

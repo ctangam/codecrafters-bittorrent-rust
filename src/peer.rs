@@ -374,13 +374,19 @@ impl Piece {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExtendedMsg {
+pub struct ExtensionHeader {
     pub m: InnerID,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InnerID {
     pub ut_metadata: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtensionMsg {
+    pub msg_type: u8,
+    pub piece: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
