@@ -6,7 +6,11 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde_json::{self, json};
 use sha1::{Digest, Sha1};
 use std::{
-    collections::HashMap, net::SocketAddrV4, path::PathBuf, sync::{Arc, Mutex}, vec
+    collections::HashMap,
+    net::SocketAddrV4,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    vec,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -16,7 +20,7 @@ use tokio::{
 
 use bittorrent_starter_rust::{
     magnet::Magnet,
-    peer::{Handshake, Message, MessageFramer, MessageTag, Piece, Request},
+    peer::{Extended, Handshake, Message, MessageFramer, MessageTag, Piece, Request},
     torrent::{self, Torrent},
     tracker::{TrackerRequest, TrackerResponse},
     BLOCK_MAX,
@@ -442,26 +446,26 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let peer = tracker_info.peers.0[0];
-            let mut stream = TcpStream::connect(peer).await.context("connect peer")?;
+            let mut peer = TcpStream::connect(peer).await.context("connect peer")?;
 
             let mut handshake = Handshake::new(info_hash, peer_id.as_bytes().try_into().unwrap());
             let support = {
                 let handshake_bytes = handshake.as_bytes_mut();
-                stream.write_all(handshake_bytes)
+                peer.write_all(handshake_bytes)
                     .await
                     .context("send handshake")?;
-                stream.read_exact(handshake_bytes)
+                peer.read_exact(handshake_bytes)
                     .await
                     .context("read handshake")?;
 
                 let handshake = Handshake::ref_from_bytes(handshake_bytes);
-                println!("reserved: {}", hex::encode(&handshake.reserved));
-                handshake.reserved[5] & 0b0001_0000 != 0
+                println!("reserved: {}", hex::encode(&handshake.reserved[5..6]));
+                handshake.reserved[5] & 0x10 == 0x10
             };
 
             println!("Peer ID: {}", hex::encode(&handshake.peer_id));
 
-            let mut peer = tokio_util::codec::Framed::new(stream, MessageFramer);
+            let mut peer = tokio_util::codec::Framed::new(peer, MessageFramer);
             let bitfield = peer
                 .next()
                 .await
@@ -470,18 +474,24 @@ async fn main() -> anyhow::Result<()> {
             assert_eq!(bitfield.tag, MessageTag::Bitfield);
 
             if support {
-                let msg = HashMap::from([("m", HashMap::from([("ut_metadata", 16)]))]);
-                let msg = serde_json::to_string(&msg).unwrap();
-                let mut peer = peer.into_inner();
-                peer.write_all(msg.as_bytes())
-                    .await
-                    .context("send ut_metadata")?;
-                // let mut msg = vec![0u8; msg.len()];
-                // peer.read_exact(&mut msg)
-                //     .await
-                //     .context("read ut_metadata")?;
+                let data: HashMap<String, HashMap<String, u32>> =
+                    HashMap::from([("m".into(), HashMap::from([("ut_metadata".into(), 16)]))]);
+                let data = serde_bencode::to_bytes(&data)?;
+                let mut extension_handshake = Extended { id: 0, data };
+                peer.send(Message {
+                    tag: MessageTag::Extended,
+                    payload: extension_handshake.as_bytes_mut().to_vec(),
+                })
+                .await
+                .context("send extended message")?;
 
-                // println!("{}", std::str::from_utf8(&msg).unwrap());
+                let extension_handshake = peer
+                    .next()
+                    .await
+                    .expect("extension handshake msg")
+                    .context("read extension handshake")?;
+                assert_eq!(extension_handshake.tag, MessageTag::Extended);
+                assert_eq!(extension_handshake.payload[0], 0);
             }
         }
     }

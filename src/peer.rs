@@ -2,6 +2,7 @@ use crate::BLOCK_MAX;
 use anyhow::Context;
 use bytes::{Buf, BufMut, BytesMut};
 use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
 use std::net::SocketAddrV4;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -108,6 +109,9 @@ impl Peer {
                     MessageTag::Bitfield => {
                         anyhow::bail!("peer sent bitfield after handshake has been completed");
                     }
+                    MessageTag::Extended => {
+                        anyhow::bail!("peer sent extended message if extension supported");
+                    }
                 }
             }
             let Ok(block) = tasks.recv().await else {
@@ -183,6 +187,9 @@ impl Peer {
                     }
                     MessageTag::Bitfield => {
                         anyhow::bail!("peer sent bitfield after handshake has been completed");
+                    }
+                    MessageTag::Extended => {
+                        anyhow::bail!("peer sent extended message if extension supported");
                     }
                 }
             }
@@ -365,6 +372,22 @@ impl Piece {
     }
 }
 
+#[repr(C)]
+#[repr(packed)]
+pub struct Extended {
+    pub id: u8,
+    pub data: Vec<u8>,
+}
+
+impl Extended {
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        let bytes = self as *mut Self as *mut [u8; std::mem::size_of::<Self>()];
+        // Safety: Self is a POD with repr(c) and repr(packed)
+        let bytes: &mut [u8; std::mem::size_of::<Self>()] = unsafe { &mut *bytes };
+        bytes
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum MessageTag {
@@ -377,6 +400,7 @@ pub enum MessageTag {
     Request = 6,
     Piece = 7,
     Cancel = 8,
+    Extended = 20,
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +474,7 @@ impl Decoder for MessageFramer {
             6 => MessageTag::Request,
             7 => MessageTag::Piece,
             8 => MessageTag::Cancel,
+            20 => MessageTag::Extended,
             tag => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
