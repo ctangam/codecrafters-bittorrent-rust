@@ -477,7 +477,7 @@ async fn main() -> anyhow::Result<()> {
                 let mut payload = vec![0];
                 let data: ExtendedMsg = ExtendedMsg {
                     m: InnerID {
-                        ut_metadata: 0,
+                        ut_metadata: 88,
                     },
                 };
                 let data = serde_bencode::to_bytes(&data)?;
