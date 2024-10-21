@@ -508,6 +508,7 @@ async fn main() -> anyhow::Result<()> {
         Command::MagnetInfo { magnet_link } => {
             let magnet = Magnet::parse(&magnet_link);
             let tracker_url = magnet.tracker_url.unwrap();
+            println!("Tracker URL: {}", tracker_url);
             let info_hash = magnet.info_hash;
 
             let peer_id: String = rand::thread_rng()
