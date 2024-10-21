@@ -789,6 +789,21 @@ async fn main() -> anyhow::Result<()> {
                     println!("{}", hex::encode(hash))
                 }
 
+                peer.send(Message {
+                    tag: MessageTag::Interested,
+                    payload: Vec::new(),
+                })
+                .await
+                .context("send interested message")?;
+    
+                let unchoke = peer
+                    .next()
+                    .await
+                    .expect("unchoke msg")
+                    .context("read unchoke")?;
+                assert_eq!(unchoke.tag, MessageTag::Unchoke);
+                assert!(unchoke.payload.is_empty());
+
                 let piece_size = if piece_id == info.pieces.0.len() - 1 {
                     let md = length % info.plength;
                     if md == 0 {
